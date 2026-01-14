@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>FX калькулятор</title>
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#007aff">
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 14px;
+  font-family: system-ui, -apple-system, Arial, sans-serif;
+  background: #f2f2f7;
+  color: #111;
+}
+
+.container {
+  background: #fff;
+  padding: 18px;
+  border-radius: 18px;
+  max-width: 420px;
+  margin: auto;
+  box-shadow: 0 4px 20px rgba(0,0,0,.08);
+}
+
+h1 {
+  text-align: center;
+  margin: 0 0 18px;
+  font-size: 22px;
+}
+
+label {
+  margin-top: 14px;
+  font-size: 14px;
+  font-weight: 600;
+  display: block;
+}
+
+input, select {
+  width: 100%;
+  margin-top: 6px;
+  padding: 12px 14px;
+  font-size: 18px;
+  border-radius: 12px;
+  border: 1px solid #ccc;
+}
+
+.hidden { display: none; }
+
+.row {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+button {
+  flex: 1;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 14px;
+  border: none;
+  color: #fff;
+}
+
+button.secondary { background: #5856d6; }
+button.offline   { background: #ff9500; }
+button.clear     { background: #8e8e93; }
+
+.result {
+  margin-top: 20px;
+  padding: 16px;
+  background: #f9f9f9;
+  border-radius: 14px;
+  font-family: ui-monospace, monospace;
+  font-size: 15px;
+  white-space: pre-line;
+  min-height: 90px;
+}
+
+.meta {
+  margin-top: 10px;
+  font-size: 12px;
+  text-align: center;
+  color: #666;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+  <h1>FX калькулятор</h1>
+
+  <label>Сумма</label>
+  <input id="amount" inputmode="decimal" placeholder="1000">
+
+  <label>Из</label>
+  <select id="from">
+    <option>USD</option><option>EUR</option><option>RUB</option>
+    <option>VND</option><option>THB</option><option>SGD</option>
+    <option>MYR</option><option>IDR</option><option>PHP</option>
+    <option>CNY</option><option>JPY</option><option>KRW</option>
+    <option>UAH</option>
+    <option value="OTHER">Другая…</option>
+  </select>
+  <input id="fromOther" class="hidden" placeholder="Код валюты (THB)">
+
+  <label>В</label>
+  <select id="to">
+    <option>USD</option><option>EUR</option><option>RUB</option>
+    <option>VND</option><option>THB</option><option>SGD</option>
+    <option>MYR</option><option>IDR</option><option>PHP</option>
+    <option>CNY</option><option>JPY</option><option>KRW</option>
+    <option>UAH</option>
+    <option value="OTHER">Другая…</option>
+  </select>
+  <input id="toOther" class="hidden" placeholder="Код валюты (SGD)">
+
+  <div class="row">
+    <button class="secondary" onclick="swap()">↔</button>
+    <button id="modeBtn" class="offline" onclick="toggleMode()">OFFLINE</button>
+    <button class="clear" onclick="clearAll()">✕</button>
+  </div>
+
+  <label>Ручной курс (1 FROM → TO)</label>
+  <input id="manualRate" inputmode="decimal" placeholder="например 24567.89">
+
+  <div class="result" id="output">—</div>
+  <div class="meta" id="meta">Курсы не загружены</div>
+</div>
+
+<script>
+const API_KEY = "881800ddc11637e100f88122";
+const API = `https://v6.exchangerate-api.com/v6/${API_KEY}/latest/USD`;
+
+const els = Object.fromEntries(
+  ["amount","from","to","fromOther","toOther","manualRate","output","meta","modeBtn"]
+  .map(id => [id.replace("Rate",""), document.getElementById(id)])
+);
+
+let rates = JSON.parse(localStorage.rates || "{}");
+let state = JSON.parse(localStorage.fxState || "{}");
+let offline = state.offline ?? true;
+
+function real(sel, other) {
+  if (sel.value !== "OTHER") return sel.value;
+  const c = other.value.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(c) ? c : null;
+}
+
+function toggleOther() {
+  els.fromOther.classList.toggle("hidden", els.from.value !== "OTHER");
+  els.toOther.classList.toggle("hidden", els.to.value !== "OTHER");
+}
+
+function saveState() {
+  localStorage.fxState = JSON.stringify({
+    amount: els.amount.value,
+    from: els.from.value,
+    to: els.to.value,
+    fromOther: els.fromOther.value,
+    toOther: els.toOther.value,
+    manual: els.manual.value,
+    offline
+  });
+}
+
+function updateModeUI() {
+  els.modeBtn.textContent = offline ? "OFFLINE" : "ONLINE";
+  els.modeBtn.className = offline ? "offline" : "secondary";
+}
+
+function toggleMode() {
+  offline = !offline;
+  updateModeUI();
+  saveState();
+  if (!offline) loadRates(true);
+  calculate();
+}
+
+async function loadRates(force=false) {
+  if (offline && !force) return;
+  els.meta.textContent = "Загрузка курсов…";
+  try {
+    const r = await fetch(API);
+    const d = await r.json();
+    if (d.result !== "success") throw 1;
+    rates = d.conversion_rates;
+    localStorage.rates = JSON.stringify(rates);
+    localStorage.ratesTime = Date.now();
+    els.meta.textContent = "Курсы обновлены";
+  } catch {
+    els.meta.textContent = "Offline: сохранённые курсы";
+  }
+}
+
+function calculate() {
+  saveState();
+  toggleOther();
+
+  const amt = parseFloat(els.amount.value.replace(',', '.'));
+  if (!amt || amt <= 0) {
+    els.output.textContent = "Введите сумму";
+    return;
+  }
+
+  const f = real(els.from, els.fromOther);
+  const t = real(els.to, els.toOther);
+  if (!f || !t) {
+    els.output.textContent = "Некорректный код валюты";
+    return;
+  }
+
+  let rate = null;
+  if (els.manual.value) {
+    rate = parseFloat(els.manual.value.replace(',', '.'));
+  } else if (rates[f] && rates[t]) {
+    rate = rates[t] / rates[f];
+  }
+
+  if (!rate || rate <= 0) {
+    els.output.textContent = "Нет курса для пары";
+    return;
+  }
+
+  els.output.textContent =
+`${amt.toLocaleString()} ${f}
+↓
+${(amt * rate).toLocaleString(undefined,{maximumFractionDigits:4})} ${t}
+
+1 ${f} ≈ ${rate.toFixed(6)} ${t}`;
+}
+
+function swap() {
+  [els.from.value, els.to.value] = [els.to.value, els.from.value];
+  [els.fromOther.value, els.toOther.value] = [els.toOther.value, els.fromOther.value];
+  calculate();
+}
+
+function clearAll() {
+  els.amount.value = "";
+  els.manual.value = "";
+  els.output.textContent = "—";
+  saveState();
+}
+
+["amount","from","to","fromOther","toOther","manual"].forEach(k=>{
+  els[k].addEventListener("input", calculate);
+  els[k].addEventListener("change", calculate);
+});
+
+function init() {
+  Object.assign(els, {
+    amount: { value: state.amount || "" },
+    from: { value: state.from || "USD" },
+    to: { value: state.to || "VND" }
+  });
+  if (state.fromOther) els.fromOther.value = state.fromOther;
+  if (state.toOther) els.toOther.value = state.toOther;
+  if (state.manual) els.manual.value = state.manual;
+  updateModeUI();
+  toggleOther();
+  if (!offline) loadRates();
+  calculate();
+}
+
+init();
+</script>
+
+<!-- Service Worker -->
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js");
+  });
+}
+</script>
+
+</body>
+</html>
